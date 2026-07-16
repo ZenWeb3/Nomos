@@ -1,0 +1,43 @@
+# Node / pnpm
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# TypeScript build output
+/dist
+*.tsbuildinfo
+
+# Hardhat
+/artifacts
+/cache
+
+# test coverage output
+/coverage
+
+# Secrets
+.env
+.env.*.local
+
+# Deploy output — contains generated testnet private keys, never commit
+/deployments
+
+# Cloned for inspection only (has its own .git, own node_modules) — not
+# part of this project's source, never commit
+/references
+
+# Claude Code session state (local settings, scheduler lock) — not part of
+# the project
+/.claude
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*~
+
+.md*
+SPRINT.md
+NOTES.md
+CONTRACT_DESIGN.md

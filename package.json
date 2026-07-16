@@ -1,0 +1,37 @@
+{
+  "name": "nomos",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --build",
+    "watch": "tsc --build . --watch",
+    "test": "pnpm hardhat test",
+    "agent": "tsx agent/src/index.ts",
+    "nomos": "tsx cli/src/index.ts"
+  },
+  "dependencies": {
+    "@iexec-nox/nox-confidential-contracts": "^0.2.0",
+    "@iexec-nox/nox-protocol-contracts": "^0.2.4",
+    "@openzeppelin/contracts": "^5.6.1",
+    "@sablier/lockup": "^4.0.1",
+    "viem": "^2.46.3"
+  },
+  "__dependenciesComments": {
+    "@nomicfoundation/hardhat-node-test-runner": "Pinned explicitly only because toolbox-viem@5.0.7 declares the runner as a peerDependency, which pnpm otherwise resolves to 3.0.9; we need >=3.0.14 (in-process runner) to exercise the plugin's hang fix. Can be removed once the peer resolves to >=3.0.14 on its own."
+  },
+  "devDependencies": {
+    "@iexec-nox/handle": "0.1.0-beta.13",
+    "@iexec-nox/nox-hardhat-plugin": "^0.1.0",
+    "@nomicfoundation/hardhat-node-test-runner": "^3.0.17",
+    "@nomicfoundation/hardhat-toolbox-viem": "^5.0.7",
+    "@tsconfig/node22": "^22.0.2",
+    "@types/node": "^22.11.0",
+    "commander": "^15.0.0",
+    "dotenv": "^17.4.2",
+    "forge-std": "github:foundry-rs/forge-std#v1.9.4",
+    "hardhat": "^3.9.0",
+    "tsx": "^4.23.1",
+    "typescript": "~5.8.0"
+  }
+}
