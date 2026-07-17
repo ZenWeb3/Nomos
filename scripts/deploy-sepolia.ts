@@ -2,23 +2,35 @@ import "dotenv/config";
 import { writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { Address, Hex } from "viem";
-import { createWalletClient, formatEther, http, parseEventLogs } from "viem";
+import { createPublicClient, createWalletClient, formatEther, getContract, http, parseEventLogs } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import { sepolia } from "viem/chains";
 import { createViemHandleClient, NotYetComputedHandleError } from "@iexec-nox/handle";
+import NomosTokenArtifact from "../artifacts/contracts/NomosToken.sol/NomosToken.json" with { type: "json" };
+import NomosPayrollArtifact from "../artifacts/contracts/NomosPayroll.sol/NomosPayroll.json" with { type: "json" };
 
 // =============================================================================
 // Nomos — Sepolia deployment + one full end-to-end payroll cycle.
 //
 // Run: pnpm hardhat run scripts/deploy-sepolia.ts --network sepolia
 //
-// Uses Hardhat's network connection only for contract-artifact-aware
-// deployment convenience (`viem.sendDeploymentTransaction`/`getContractAt`).
-// All actual signing goes through a wallet client this script constructs
-// itself from DEPLOYER_PRIVATE_KEY, read directly from .env — this sidesteps
-// any ambiguity in how hardhat.config.ts's `accounts` array happens to
-// format that key, and satisfies "read from .env" literally rather than
-// indirectly through Hardhat's config layer.
+// Deploys via plain viem (`walletClient.deployContract` + `getContract`),
+// reading bytecode/ABI straight from Hardhat's build artifacts, rather than
+// `@nomicfoundation/hardhat-viem`'s `sendDeploymentTransaction` helper — that
+// helper calls `getTransaction(hash)` immediately after broadcasting to
+// resolve the deployment, which assumes the RPC endpoint is read-your-writes
+// consistent. Free/load-balanced public RPCs (e.g. publicnode) aren't
+// always: a prior run's `NomosToken` deploy landed successfully on-chain
+// (confirmed after the fact via `eth_getTransactionReceipt`) but the script
+// still threw `TransactionNotFoundError` because the immediate follow-up
+// read hit a different, lagging backend node. This script's own
+// `sendAndWait` (receipt-polling with a 300s timeout) doesn't have that
+// assumption, so deployments go through it too now, exactly like every
+// other transaction here. All signing goes through a wallet client this
+// script constructs itself from DEPLOYER_PRIVATE_KEY, read directly from
+// .env — this sidesteps any ambiguity in how hardhat.config.ts's `accounts`
+// array happens to format that key, and satisfies "read from .env"
+// literally rather than indirectly through Hardhat's config layer.
 // =============================================================================
 
 const EXPLORER = "https://sepolia.etherscan.io";
@@ -135,10 +147,7 @@ async function main() {
   console.log(`[deploy-sepolia] Deployer address: ${deployerAccount.address}`);
   console.log(`[deploy-sepolia] Sablier Lockup: ${sablierAddress}`);
 
-  const { network } = await import("hardhat");
-  const connection = await network.create("sepolia");
-  const { viem } = connection;
-  const publicClient = await viem.getPublicClient();
+  const publicClient = createPublicClient({ chain: sepolia, transport: http(sepoliaRpcUrl) });
 
   const chainId = await publicClient.getChainId();
   if (chainId !== CHAIN_ID) {
@@ -171,11 +180,18 @@ async function main() {
   //    replacing the DAI_SEPOLIA faucet that turned out to be onlyOwner-gated.
   // ---------------------------------------------------------------------
   console.log("\n=== [1/9] Deploying NomosToken ===");
-  const { contract: nomosToken, deploymentTransaction: tokenDeployTx } =
-    await viem.sendDeploymentTransaction("NomosToken", [], {
-      client: { wallet: deployerWalletClient, public: publicClient },
-    });
-  await sendAndWait(publicClient, tokenDeployTx.hash, "deploy NomosToken");
+  const tokenDeployHash = await deployerWalletClient.deployContract({
+    abi: NomosTokenArtifact.abi,
+    bytecode: NomosTokenArtifact.bytecode as Hex,
+    args: [],
+  });
+  const tokenReceipt = await sendAndWait(publicClient, tokenDeployHash, "deploy NomosToken");
+  const nomosTokenAddress = tokenReceipt.contractAddress as Address;
+  const nomosToken = getContract({
+    address: nomosTokenAddress,
+    abi: NomosTokenArtifact.abi,
+    client: { public: publicClient, wallet: deployerWalletClient },
+  });
   console.log(`  NomosToken: ${nomosToken.address}`);
   console.log(`  ${EXPLORER}/address/${nomosToken.address}`);
 
@@ -188,9 +204,10 @@ async function main() {
   // asked to exercise as its own visible on-chain step; passing zeros here
   // instead would leave a fragile intermediate state (a zero stream
   // duration) between deploy and that call for no benefit.
-  const { contract: nomosPayroll, deploymentTransaction } = await viem.sendDeploymentTransaction(
-    "NomosPayroll",
-    [
+  const payrollDeployHash = await deployerWalletClient.deployContract({
+    abi: NomosPayrollArtifact.abi,
+    bytecode: NomosPayrollArtifact.bytecode as Hex,
+    args: [
       deployerAccount.address, // agent = deployer, noted as future work in README
       nomosToken.address,
       sablierAddress,
@@ -199,9 +216,14 @@ async function main() {
       POLICY.streamDuration,
       POLICY.spendCap,
     ],
-    { client: { wallet: deployerWalletClient, public: publicClient } },
-  );
-  await sendAndWait(publicClient, deploymentTransaction.hash, "deploy NomosPayroll");
+  });
+  const payrollReceipt = await sendAndWait(publicClient, payrollDeployHash, "deploy NomosPayroll");
+  const nomosPayrollAddress = payrollReceipt.contractAddress as Address;
+  const nomosPayroll = getContract({
+    address: nomosPayrollAddress,
+    abi: NomosPayrollArtifact.abi,
+    client: { public: publicClient, wallet: deployerWalletClient },
+  });
   console.log(`  NomosPayroll: ${nomosPayroll.address}`);
   console.log(`  ${EXPLORER}/address/${nomosPayroll.address}`);
 
@@ -313,14 +335,16 @@ async function main() {
     attested: boolean;
   }> = [];
   for (const log of attestedLogs) {
-    const recipient = log.args.recipient as string;
-    const streamId = (log.args.streamId as bigint).toString();
+    const args = (log as unknown as { args: { recipient: Address; streamId: bigint; matchesLedgerHandle: Hex } })
+      .args;
+    const recipient = args.recipient;
+    const streamId = args.streamId.toString();
     const employee = employees.find((e) => sameAddress(e.address, recipient));
     const explorerUrl = `${EXPLORER}/nft/${sablierAddress}/${streamId}`;
 
     const { value: matches } = await withPatience(
       `publicDecrypt(attestation for ${employee?.name ?? recipient})`,
-      () => handleClient.publicDecrypt(log.args.matchesLedgerHandle as Hex),
+      () => handleClient.publicDecrypt(args.matchesLedgerHandle),
     );
 
     console.log(`  ${employee?.name ?? recipient} (${recipient})`);
@@ -348,10 +372,10 @@ async function main() {
     chainId: CHAIN_ID,
     deployedAt: new Date().toISOString(),
     nomosPayrollAddress: nomosPayroll.address,
-    deployTxHash: deploymentTransaction.hash,
+    deployTxHash: payrollDeployHash,
     deployerAddress: deployerAccount.address,
     payrollTokenAddress: nomosToken.address,
-    payrollTokenDeployTxHash: tokenDeployTx.hash,
+    payrollTokenDeployTxHash: tokenDeployHash,
     sablierAddress,
     policy: {
       cooldownSeconds: POLICY.cooldownSeconds,
@@ -376,7 +400,7 @@ async function main() {
     streams,
     explorer: {
       contract: `${EXPLORER}/address/${nomosPayroll.address}`,
-      deployTx: `${EXPLORER}/tx/${deploymentTransaction.hash}`,
+      deployTx: `${EXPLORER}/tx/${payrollDeployHash}`,
       runCycleTx: `${EXPLORER}/tx/${runCycleHash}`,
     },
   };
@@ -404,7 +428,7 @@ Last deployed: ${output.deployedAt}
 
 ## This run
 
-- Deploy tx: [${deploymentTransaction.hash}](${output.explorer.deployTx})
+- Deploy tx: [${payrollDeployHash}](${output.explorer.deployTx})
 - runCycle tx: [${runCycleHash}](${output.explorer.runCycleTx})
 - Cycle: #${cycleCount}
 - Within spend cap: ${withinCapBeforeRun}

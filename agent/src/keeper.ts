@@ -217,9 +217,8 @@ export async function runKeeperLoop(config: KeeperConfig, options: RunKeeperLoop
   while (!options.signal?.aborted) {
     let sleepMs = baseIntervalMs;
     try {
-      const outcome = await tick(sepolia, handleClient, config);
+      await tick(sepolia, handleClient, config);
       backoffMs = baseIntervalMs; // any tick that completes without throwing resets backoff
-      sleepMs = outcome === "ran" ? baseIntervalMs : baseIntervalMs;
     } catch (error) {
       log.error("tick failed unexpectedly — backing off", {
         error: error instanceof Error ? error.message : String(error),
