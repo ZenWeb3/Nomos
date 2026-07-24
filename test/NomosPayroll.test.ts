@@ -5,8 +5,25 @@ import { parseEventLogs } from "viem";
 import { nox } from "@iexec-nox/nox-hardhat-plugin";
 import { createViemHandleClient } from "@iexec-nox/handle";
 import NoxComputeArtifact from "@iexec-nox/nox-protocol-contracts/artifacts/contracts/NoxCompute.sol/NoxCompute.json" with { type: "json" };
+import { eventArgs } from "../agent/src/events.js";
 
 const NOX_COMPUTE_ABI = NoxComputeArtifact.abi as Abi;
+
+// ctx.nomosPayroll is deliberately `any` (see the Deployment interface below),
+// so parseEventLogs can't discriminate its return type by eventName — every
+// `.args` access goes through eventArgs<T>() instead. See agent/src/events.ts.
+interface PaymentAttestedArgs {
+  recipient: string;
+  streamId: bigint;
+  cycleCount: bigint;
+  matchesLedgerHandle: Hex;
+}
+
+interface CycleExecutedArgs {
+  cycleCount: bigint;
+  timestamp: bigint;
+  employeeCount: bigint;
+}
 
 // ---------------------------------------------------------------------------
 // Why this file does NOT use hardhat-network-helpers' `loadFixture`:
@@ -36,7 +53,7 @@ const NOX_COMPUTE_ABI = NoxComputeArtifact.abi as Abi;
 const NOX_COMPUTE_ADDRESS: Address = "0x75C6AF4430cc474b1bb9b8540b7E46D6f8e1C685";
 const HANDLE_GATEWAY_HOST_PORT_ENV = "NOX_HANDLE_GATEWAY_HOST_PORT";
 
-function handleGatewayUrl(): string {
+function handleGatewayUrl(): `http://${string}` {
   const raw = process.env[HANDLE_GATEWAY_HOST_PORT_ENV];
   const port = raw === undefined ? Number.NaN : Number(raw);
   if (!Number.isInteger(port) || port <= 0) {
@@ -175,7 +192,7 @@ async function deploy(
       agent.account.address,
       mockToken.address,
       mockSablier.address,
-      opts.cooldownSeconds ?? COOLDOWN_SECONDS,
+      BigInt(opts.cooldownSeconds ?? COOLDOWN_SECONDS),
       CLIFF_DURATION,
       STREAM_DURATION,
       opts.spendCap ?? DEFAULT_SPEND_CAP,
@@ -425,8 +442,8 @@ describe("NomosPayroll — Happy Path", () => {
         eventName: "PaymentAttested",
       });
       assert.equal(attested.length, 1);
-      assert.ok(sameAddress(attested[0].args.recipient as string, ctx.alice.account.address));
-      assert.equal(attested[0].args.cycleCount, 1n);
+      assert.ok(sameAddress(eventArgs<PaymentAttestedArgs>(attested[0]).recipient, ctx.alice.account.address));
+      assert.equal(eventArgs<PaymentAttestedArgs>(attested[0]).cycleCount, 1n);
 
       const cycleExecuted = parseEventLogs({
         abi: ctx.nomosPayroll.abi,
@@ -434,8 +451,8 @@ describe("NomosPayroll — Happy Path", () => {
         eventName: "CycleExecuted",
       });
       assert.equal(cycleExecuted.length, 1);
-      assert.equal(cycleExecuted[0].args.cycleCount, 1n);
-      assert.equal(cycleExecuted[0].args.employeeCount, 1n);
+      assert.equal(eventArgs<CycleExecutedArgs>(cycleExecuted[0]).cycleCount, 1n);
+      assert.equal(eventArgs<CycleExecutedArgs>(cycleExecuted[0]).employeeCount, 1n);
 
       assert.equal(await ctx.nomosPayroll.read.cycleCount(), 1n);
       const block = await ctx.publicClient.getBlock({ blockNumber: receipt.blockNumber });
@@ -595,15 +612,16 @@ describe("NomosPayroll — Attestation (detective control)", () => {
     });
     assert.equal(attested.length, 2);
 
-    const handles = attested.map((log) => log.args.matchesLedgerHandle as Hex);
+    const handles = attested.map((log) => eventArgs<PaymentAttestedArgs>(log).matchesLedgerHandle);
     await waitForHandlesResolved(handles);
 
     for (const log of attested) {
-      const { value } = await nox.publicDecrypt(log.args.matchesLedgerHandle as Hex);
+      const args = eventArgs<PaymentAttestedArgs>(log);
+      const { value } = await nox.publicDecrypt(args.matchesLedgerHandle);
       assert.equal(
         value,
         true,
-        `attestation for ${log.args.recipient} should be true — the paid amount matched the confidential ledger`,
+        `attestation for ${args.recipient} should be true — the paid amount matched the confidential ledger`,
       );
     }
   });
@@ -642,21 +660,18 @@ describe("NomosPayroll — Attestation (detective control)", () => {
       eventName: "PaymentAttested",
     });
     const aliceAttestation = attested.find((log) =>
-      sameAddress(log.args.recipient as string, ctx.alice.account.address),
+      sameAddress(eventArgs<PaymentAttestedArgs>(log).recipient, ctx.alice.account.address),
     )!;
     const bobAttestation = attested.find((log) =>
-      sameAddress(log.args.recipient as string, ctx.bob.account.address),
+      sameAddress(eventArgs<PaymentAttestedArgs>(log).recipient, ctx.bob.account.address),
     )!;
+    const aliceAttestationArgs = eventArgs<PaymentAttestedArgs>(aliceAttestation);
+    const bobAttestationArgs = eventArgs<PaymentAttestedArgs>(bobAttestation);
 
-    await waitForHandlesResolved([
-      aliceAttestation.args.matchesLedgerHandle as Hex,
-      bobAttestation.args.matchesLedgerHandle as Hex,
-    ]);
+    await waitForHandlesResolved([aliceAttestationArgs.matchesLedgerHandle, bobAttestationArgs.matchesLedgerHandle]);
 
-    const { value: aliceMatches } = await nox.publicDecrypt(
-      aliceAttestation.args.matchesLedgerHandle as Hex,
-    );
-    const { value: bobMatches } = await nox.publicDecrypt(bobAttestation.args.matchesLedgerHandle as Hex);
+    const { value: aliceMatches } = await nox.publicDecrypt(aliceAttestationArgs.matchesLedgerHandle);
+    const { value: bobMatches } = await nox.publicDecrypt(bobAttestationArgs.matchesLedgerHandle);
 
     assert.equal(
       aliceMatches,

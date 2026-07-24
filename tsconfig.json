@@ -16,6 +16,14 @@
     "isolatedModules": true,
     "typeRoots": ["${configDir}/node_modules/@types"]
   },
-  "exclude": ["${configDir}/dist", "${configDir}/node_modules"],
-  "references": [{ "path": "../plugin" }]
+  "include": [
+    "${configDir}/agent/**/*.ts",
+    "${configDir}/cli/**/*.ts",
+    "${configDir}/scripts/**/*.ts",
+    "${configDir}/test/**/*.ts",
+    "${configDir}/hardhat.config.ts",
+    "${configDir}/artifacts/contracts/NomosPayroll.sol/NomosPayroll.json",
+    "${configDir}/artifacts/contracts/NomosToken.sol/NomosToken.json"
+  ],
+  "exclude": ["${configDir}/dist", "${configDir}/node_modules", "${configDir}/references"]
 }

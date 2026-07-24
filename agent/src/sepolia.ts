@@ -16,15 +16,24 @@ export function normalizePrivateKey(raw: string): Hex {
   return (trimmed.startsWith("0x") ? trimmed : `0x${trimmed}`) as Hex;
 }
 
-export function createSepoliaClients(rpcUrl: string, privateKey: Hex) {
+export interface SepoliaClients {
+  publicClient: ReturnType<typeof createPublicClient>;
+  walletClient: ReturnType<typeof createWalletClient>;
+  account: PrivateKeyAccount;
+}
+
+// Explicit return type, not inferred: composite + declaration builds must be
+// able to *name* every exported symbol's type in the emitted .d.ts, and
+// viem's client factories return types deep enough that TS can't always do
+// that for an inferred function return (TS2742/TS7056) — annotating instead
+// of inferring sidesteps the serialization, not just silences it.
+export function createSepoliaClients(rpcUrl: string, privateKey: Hex): SepoliaClients {
   const account: PrivateKeyAccount = privateKeyToAccount(privateKey);
   const transport = http(rpcUrl);
   const publicClient = createPublicClient({ chain: sepolia, transport });
   const walletClient = createWalletClient({ account, chain: sepolia, transport });
   return { publicClient, walletClient, account };
 }
-
-export type SepoliaClients = ReturnType<typeof createSepoliaClients>;
 
 export async function assertSepolia(publicClient: SepoliaClients["publicClient"]): Promise<void> {
   const chainId = await publicClient.getChainId();
